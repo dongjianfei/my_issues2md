@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"flag"
 	"fmt"
 	"os"
 
@@ -11,6 +13,9 @@ import (
 func main() {
 	opts, err := cli.ParseArgs(os.Args[1:])
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -29,6 +34,9 @@ func main() {
 			os.Exit(1)
 		}
 	} else {
-		os.Stdout.Write(buf.Bytes())
+		if _, err := os.Stdout.Write(buf.Bytes()); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to write to stdout: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }

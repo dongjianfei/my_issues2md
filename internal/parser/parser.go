@@ -52,8 +52,8 @@ func ParseURL(rawURL string) (*ParsedURL, error) {
 		}
 	}
 
-	// Expect at least: owner/repo/type/number
-	if len(segments) < 4 {
+	// Expect exactly: owner/repo/type/number
+	if len(segments) != 4 {
 		return nil, fmt.Errorf("invalid GitHub URL: expected /owner/repo/type/number, got %q", u.Path)
 	}
 
@@ -65,6 +65,9 @@ func ParseURL(rawURL string) (*ParsedURL, error) {
 	number, err := strconv.Atoi(numberStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid number in URL: %q: %w", numberStr, err)
+	}
+	if number <= 0 {
+		return nil, fmt.Errorf("invalid number in URL: must be positive, got %d", number)
 	}
 
 	var contentType ContentType

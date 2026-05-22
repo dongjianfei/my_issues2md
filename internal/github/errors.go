@@ -18,16 +18,16 @@ func wrapAPIError(err error, resource string) error {
 	if errResp, ok := err.(*gogithub.ErrorResponse); ok {
 		switch errResp.Response.StatusCode {
 		case http.StatusNotFound:
-			return fmt.Errorf("%s not found (404). Please check the URL and ensure the resource exists", resource)
+			return fmt.Errorf("%s not found (404). Please check the URL and ensure the resource exists: %w", resource, err)
 		case http.StatusForbidden:
 			if strings.Contains(errResp.Message, "rate limit") {
-				return fmt.Errorf("GitHub API rate limit exceeded. Please set GITHUB_TOKEN environment variable for higher limits")
+				return fmt.Errorf("GitHub API rate limit exceeded. Please set GITHUB_TOKEN environment variable for higher limits: %w", err)
 			}
-			return fmt.Errorf("access forbidden (403). Please check your GITHUB_TOKEN permissions or if the repository is private")
+			return fmt.Errorf("access forbidden (403). Please check your GITHUB_TOKEN permissions or if the repository is private: %w", err)
 		case http.StatusUnauthorized:
-			return fmt.Errorf("authentication failed (401). Please check your GITHUB_TOKEN")
+			return fmt.Errorf("authentication failed (401). Please check your GITHUB_TOKEN: %w", err)
 		default:
-			return fmt.Errorf("%s: %s (HTTP %d)", resource, errResp.Message, errResp.Response.StatusCode)
+			return fmt.Errorf("%s: %s (HTTP %d): %w", resource, errResp.Message, errResp.Response.StatusCode, err)
 		}
 	}
 

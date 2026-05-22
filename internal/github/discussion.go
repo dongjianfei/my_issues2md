@@ -3,6 +3,8 @@ package github
 import (
 	"context"
 	"fmt"
+	"os"
+	"sort"
 	"time"
 
 	"github.com/shurcooL/githubv4"
@@ -56,8 +58,10 @@ type discussionCommentNode struct {
 	CreatedAt      time.Time
 	IsAnswer       bool
 	ReactionGroups []reactionGroup
-	Replies        struct {
-		Nodes []discussionReplyNode
+	// NOTE: MVP限制 - replies最多获取100条，不做嵌套分页
+	Replies struct {
+		Nodes    []discussionReplyNode
+		PageInfo replyPageInfo
 	} `graphql:"replies(first: 100)"`
 }
 
@@ -69,6 +73,10 @@ type discussionReplyNode struct {
 	Body           string
 	CreatedAt      time.Time
 	ReactionGroups []reactionGroup
+}
+
+type replyPageInfo struct {
+	HasNextPage bool
 }
 
 // FetchDiscussion 获取Discussion完整数据（含Answer标记）
@@ -112,6 +120,9 @@ func (c *Client) FetchDiscussion(owner, repo string, number int) (*Discussion, e
 		for _, r := range c.Replies.Nodes {
 			disc.Comments = append(disc.Comments, toDiscussionReply(r))
 		}
+		if c.Replies.PageInfo.HasNextPage {
+			fmt.Fprintf(os.Stderr, "warning: discussion %s/%s#%d comment by %s has more than 100 replies, some replies may be truncated\n", owner, repo, number, c.Author.Login)
+		}
 	}
 
 	// Paginate remaining comments
@@ -135,9 +146,17 @@ func (c *Client) FetchDiscussion(owner, repo string, number int) (*Discussion, e
 			for _, r := range c.Replies.Nodes {
 				disc.Comments = append(disc.Comments, toDiscussionReply(r))
 			}
+			if c.Replies.PageInfo.HasNextPage {
+				fmt.Fprintf(os.Stderr, "warning: discussion %s/%s#%d comment by %s has more than 100 replies, some replies may be truncated\n", owner, repo, number, c.Author.Login)
+			}
 		}
 		d.Comments.PageInfo = nd.Comments.PageInfo
 	}
+
+	// 全局按时间正序排列（spec要求所有评论按时间正序）
+	sort.Slice(disc.Comments, func(i, j int) bool {
+		return disc.Comments[i].CreatedAt.Before(disc.Comments[j].CreatedAt)
+	})
 
 	disc.CommentCount = len(disc.Comments)
 	return disc, nil

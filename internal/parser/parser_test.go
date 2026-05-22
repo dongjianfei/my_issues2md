@@ -108,6 +108,21 @@ func TestParseURL(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "extra path segments after number",
+			rawURL:  "https://github.com/owner/repo/issues/1/extra",
+			wantErr: true,
+		},
+		{
+			name:    "number is zero",
+			rawURL:  "https://github.com/owner/repo/issues/0",
+			wantErr: true,
+		},
+		{
+			name:    "number is negative",
+			rawURL:  "https://github.com/owner/repo/issues/-1",
+			wantErr: true,
+		},
+		{
 			name:    "invalid URL",
 			rawURL:  "not-a-url",
 			wantErr: true,
