@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/dongjianfei/issue2md/internal/cli"
@@ -61,5 +62,31 @@ func TestRoutes(t *testing.T) {
 				t.Errorf("got status %d, want %d", rec.Code, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestHandleIndex(t *testing.T) {
+	s := NewServer(mockConvertSuccess)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", rec.Code)
+	}
+
+	body := rec.Body.String()
+	wants := []string{
+		"<form",
+		"<textarea",
+		`name="urls"`,
+		`name="enable_reactions"`,
+		`name="enable_user_links"`,
+		"开始转换",
+	}
+	for _, want := range wants {
+		if !strings.Contains(body, want) {
+			t.Errorf("response body missing %q", want)
+		}
 	}
 }
