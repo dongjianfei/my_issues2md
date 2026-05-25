@@ -515,6 +515,21 @@ func TestHandleDownload(t *testing.T) {
 	}
 }
 
+func TestHandleIndexContainsJS(t *testing.T) {
+	s := NewServer(mockConvertSuccess)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	jsWants := []string{"toggleExpand", "progressFill", "resultsSection", "btnConvert", "fetch"}
+	for _, want := range jsWants {
+		if !strings.Contains(body, want) {
+			t.Errorf("index.html missing JS reference %q", want)
+		}
+	}
+}
+
 func TestHandleDownloadAll(t *testing.T) {
 	tests := []struct {
 		name       string

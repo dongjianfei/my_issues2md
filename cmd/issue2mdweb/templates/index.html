@@ -227,7 +227,164 @@
   </div>
 
   <script>
-    // JS will be added in Task 7
+(function() {
+  const form = document.getElementById('convertForm');
+  const btnConvert = document.getElementById('btnConvert');
+  const progressSection = document.getElementById('progressSection');
+  const progressCount = document.getElementById('progressCount');
+  const progressFill = document.getElementById('progressFill');
+  const resultsSection = document.getElementById('resultsSection');
+  const btnDownloadAll = document.getElementById('btnDownloadAll');
+
+  let results = [];
+
+  form.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    results = [];
+    resultsSection.innerHTML = '';
+    btnDownloadAll.style.display = 'none';
+    progressSection.style.display = 'block';
+    progressCount.textContent = '0 / 0 完成';
+    progressFill.style.width = '0%';
+    btnConvert.disabled = true;
+
+    const formData = new FormData(form);
+    try {
+      const response = await fetch('/convert', { method: 'POST', body: new URLSearchParams(formData) });
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let total = 0;
+      let processed = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let currentEvent = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.substring(7);
+          } else if (line.startsWith('data: ')) {
+            const data = JSON.parse(line.substring(6));
+            handleEvent(currentEvent, data);
+          }
+        }
+      }
+    } catch (err) {
+      resultsSection.innerHTML += '<div class="result-card"><div class="result-header error"><div class="result-info"><span class="result-icon-err">✗</span><span>网络错误: ' + escapeHtml(err.message) + '</span></div></div></div>';
+    } finally {
+      btnConvert.disabled = false;
+    }
+
+    function handleEvent(event, data) {
+      if (event === 'start') {
+        total = data.total;
+        progressCount.textContent = '0 / ' + total + ' 完成';
+      } else if (event === 'result') {
+        processed++;
+        progressCount.textContent = processed + ' / ' + total + ' 完成';
+        progressFill.style.width = (processed / total * 100) + '%';
+        appendResult(data);
+        if (data.success) {
+          results.push({ filename: data.filename, content: data.markdown });
+        }
+      } else if (event === 'done') {
+        if (results.length > 0) {
+          btnDownloadAll.style.display = 'inline-block';
+        }
+      } else if (event === 'error') {
+        resultsSection.innerHTML += '<div class="result-card"><div class="result-header error"><div class="result-info"><span class="result-icon-err">✗</span><span>' + escapeHtml(data.message) + '</span></div></div></div>';
+      }
+    }
+  });
+
+  function appendResult(result) {
+    const card = document.createElement('div');
+    card.className = 'result-card';
+
+    if (result.success) {
+      const preview = escapeHtml(result.markdown.substring(0, 200));
+      card.innerHTML =
+        '<div class="result-header">' +
+          '<div class="result-info">' +
+            '<span class="result-icon-ok">✓</span>' +
+            '<span class="result-ref">' + escapeHtml(result.filename.replace('.md','')) + '</span>' +
+          '</div>' +
+          '<div>' +
+            '<button class="btn-sm" onclick="toggleExpand(this)">展开</button> ' +
+            '<button class="btn-sm" onclick="downloadOne(\'' + escapeAttr(result.filename) + '\',' + result.index + ')">下载 .md</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="result-preview">' + preview + '</div>' +
+        '<div class="result-full">' + escapeHtml(result.markdown) + '</div>';
+    } else {
+      card.innerHTML =
+        '<div class="result-header error">' +
+          '<div class="result-info">' +
+            '<span class="result-icon-err">✗</span>' +
+            '<span class="result-ref">' + escapeHtml(result.url) + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<div class="result-error">' + escapeHtml(result.error) + '</div>';
+    }
+    resultsSection.appendChild(card);
+  }
+
+  window.toggleExpand = function(btn) {
+    const card = btn.closest('.result-card');
+    const full = card.querySelector('.result-full');
+    const preview = card.querySelector('.result-preview');
+    if (full.style.display === 'block') {
+      full.style.display = 'none';
+      preview.style.display = 'block';
+      btn.textContent = '展开';
+    } else {
+      full.style.display = 'block';
+      preview.style.display = 'none';
+      btn.textContent = '收起';
+    }
+  };
+
+  window.downloadOne = function(filename, index) {
+    const item = results.find(r => r.filename === filename);
+    if (!item) return;
+    const f = document.createElement('form');
+    f.method = 'POST';
+    f.action = '/download';
+    f.style.display = 'none';
+    f.innerHTML = '<input name="filename" value="' + escapeAttr(item.filename) + '">' +
+                  '<input name="content" value="' + escapeAttr(item.content) + '">';
+    document.body.appendChild(f);
+    f.submit();
+    document.body.removeChild(f);
+  };
+
+  btnDownloadAll.addEventListener('click', function() {
+    const f = document.createElement('form');
+    f.method = 'POST';
+    f.action = '/download-all';
+    f.style.display = 'none';
+    f.innerHTML = '<input name="files" value="' + escapeAttr(JSON.stringify(results)) + '">';
+    document.body.appendChild(f);
+    f.submit();
+    document.body.removeChild(f);
+  });
+
+  function escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  function escapeAttr(str) {
+    return str.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+})();
   </script>
 </body>
 </html>
