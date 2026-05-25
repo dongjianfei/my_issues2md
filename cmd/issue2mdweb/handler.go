@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/dongjianfei/issue2md/internal/cli"
 	"github.com/dongjianfei/issue2md/internal/parser"
 )
 
@@ -64,8 +67,89 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	s.templates.ExecuteTemplate(w, "index.html", nil)
 }
 
+// ConvertResult 表示单个 URL 的转换结果
+type ConvertResult struct {
+	URL      string `json:"url"`
+	Success  bool   `json:"success"`
+	Markdown string `json:"markdown,omitempty"`
+	Error    string `json:"error,omitempty"`
+	Filename string `json:"filename,omitempty"`
+	Index    int    `json:"index"`
+	Total    int    `json:"total"`
+}
+
+// writeSSE 写入一个 SSE 事件
+func writeSSE(w http.ResponseWriter, event string, data interface{}) {
+	jsonData, _ := json.Marshal(data)
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	if err := r.ParseForm(); err != nil {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		writeSSE(w, "error", map[string]string{"message": "表单解析失败"})
+		return
+	}
+
+	urlsRaw := r.FormValue("urls")
+	enableReactions := r.FormValue("enable_reactions") == "on"
+	enableUserLinks := r.FormValue("enable_user_links") == "on"
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	urls, err := parseURLList(urlsRaw)
+	if err != nil {
+		writeSSE(w, "error", map[string]string{"message": err.Error()})
+		return
+	}
+
+	total := len(urls)
+	writeSSE(w, "start", map[string]int{"total": total})
+
+	completed := 0
+	failed := 0
+
+	for i, u := range urls {
+		if r.Context().Err() != nil {
+			return
+		}
+
+		opts := &cli.RunOptions{
+			URL:             u,
+			EnableReactions: enableReactions,
+			EnableUserLinks: enableUserLinks,
+		}
+
+		var buf bytes.Buffer
+		result := ConvertResult{
+			URL:   u,
+			Index: i + 1,
+			Total: total,
+		}
+
+		if err := s.convert(&buf, opts); err != nil {
+			result.Success = false
+			result.Error = err.Error()
+			result.Filename = generateFilename(u)
+			failed++
+		} else {
+			result.Success = true
+			result.Markdown = buf.String()
+			result.Filename = generateFilename(u)
+			completed++
+		}
+
+		writeSSE(w, "result", result)
+	}
+
+	writeSSE(w, "done", map[string]int{"completed": completed, "failed": failed})
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {

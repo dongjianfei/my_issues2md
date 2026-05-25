@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +17,50 @@ import (
 func mockConvertSuccess(w io.Writer, opts *cli.RunOptions) error {
 	_, _ = io.WriteString(w, "---\ntitle: \"Test Issue\"\ntype: issue\n---\n# Test\n")
 	return nil
+}
+
+// mockConvertError 模拟失败的转换
+func mockConvertError(w io.Writer, opts *cli.RunOptions) error {
+	return fmt.Errorf("fetch issue: API request failed with status 404")
+}
+
+// mockConvertByURL 根据 URL 决定成功或失败
+func mockConvertByURL(w io.Writer, opts *cli.RunOptions) error {
+	if strings.Contains(opts.URL, "fail") {
+		return fmt.Errorf("fetch issue: API request failed with status 404")
+	}
+	_, _ = io.WriteString(w, "---\ntitle: \"Test\"\ntype: issue\n---\n# Content for "+opts.URL+"\n")
+	return nil
+}
+
+// sseEvent 表示一个解析后的 SSE 事件
+type sseEvent struct {
+	Event string
+	Data  string
+}
+
+// parseSSEEvents 从响应 body 中解析 SSE 事件
+func parseSSEEvents(body string) []sseEvent {
+	var events []sseEvent
+	scanner := bufio.NewScanner(strings.NewReader(body))
+	var currentEvent sseEvent
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "event: ") {
+			currentEvent.Event = strings.TrimPrefix(line, "event: ")
+		} else if strings.HasPrefix(line, "data: ") {
+			currentEvent.Data = strings.TrimPrefix(line, "data: ")
+		} else if line == "" && currentEvent.Event != "" {
+			events = append(events, currentEvent)
+			currentEvent = sseEvent{}
+		}
+	}
+	if currentEvent.Event != "" {
+		events = append(events, currentEvent)
+	}
+
+	return events
 }
 
 func TestNewServer(t *testing.T) {
@@ -224,5 +270,185 @@ func TestGenerateFilename(t *testing.T) {
 				t.Errorf("generateFilename(%q) = %q, want %q", tt.url, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHandleConvert(t *testing.T) {
+	tests := []struct {
+		name            string
+		convertFn       convertFunc
+		formURLs        string
+		enableReactions string
+		enableUserLinks string
+		wantEvents      []string
+		wantStatus      int
+	}{
+		{
+			name:       "empty URL list",
+			convertFn:  mockConvertSuccess,
+			formURLs:   "",
+			wantEvents: []string{"error"},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "single success",
+			convertFn:  mockConvertSuccess,
+			formURLs:   "https://github.com/golang/go/issues/1",
+			wantEvents: []string{"start", "result", "done"},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "single failure",
+			convertFn:  mockConvertError,
+			formURLs:   "https://github.com/golang/go/issues/1",
+			wantEvents: []string{"start", "result", "done"},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "mixed success and failure",
+			convertFn:  mockConvertByURL,
+			formURLs:   "https://github.com/golang/go/issues/1\nhttps://github.com/fail/repo/issues/2\nhttps://github.com/cli/cli/pull/3",
+			wantEvents: []string{"start", "result", "result", "result", "done"},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "duplicate URLs deduplicated",
+			convertFn:  mockConvertSuccess,
+			formURLs:   "https://github.com/golang/go/issues/1\nhttps://github.com/golang/go/issues/1",
+			wantEvents: []string{"start", "result", "done"},
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewServer(tt.convertFn)
+
+			form := strings.NewReader("urls=" + strings.ReplaceAll(tt.formURLs, "\n", "%0A") +
+				"&enable_reactions=" + tt.enableReactions +
+				"&enable_user_links=" + tt.enableUserLinks)
+			req := httptest.NewRequest(http.MethodPost, "/convert", form)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+
+			s.mux.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("got status %d, want %d", rec.Code, tt.wantStatus)
+			}
+
+			events := parseSSEEvents(rec.Body.String())
+			if len(events) != len(tt.wantEvents) {
+				t.Fatalf("got %d events, want %d.\nBody:\n%s", len(events), len(tt.wantEvents), rec.Body.String())
+			}
+			for i, e := range events {
+				if e.Event != tt.wantEvents[i] {
+					t.Errorf("event[%d] = %q, want %q", i, e.Event, tt.wantEvents[i])
+				}
+			}
+		})
+	}
+}
+
+func TestHandleConvertResultContent(t *testing.T) {
+	s := NewServer(mockConvertByURL)
+
+	form := strings.NewReader("urls=https%3A%2F%2Fgithub.com%2Fgolang%2Fgo%2Fissues%2F1%0Ahttps%3A%2F%2Fgithub.com%2Ffail%2Frepo%2Fissues%2F2")
+	req := httptest.NewRequest(http.MethodPost, "/convert", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	s.mux.ServeHTTP(rec, req)
+
+	events := parseSSEEvents(rec.Body.String())
+
+	// start event
+	var startData map[string]int
+	if err := json.Unmarshal([]byte(events[0].Data), &startData); err != nil {
+		t.Fatalf("failed to parse start event data: %v", err)
+	}
+	if startData["total"] != 2 {
+		t.Errorf("start total = %d, want 2", startData["total"])
+	}
+
+	// first result: success
+	var result1 ConvertResult
+	if err := json.Unmarshal([]byte(events[1].Data), &result1); err != nil {
+		t.Fatalf("failed to parse result 1: %v", err)
+	}
+	if !result1.Success {
+		t.Error("result 1 should be success")
+	}
+	if result1.Filename != "golang_go_issue_1.md" {
+		t.Errorf("result 1 filename = %q, want %q", result1.Filename, "golang_go_issue_1.md")
+	}
+	if result1.Index != 1 {
+		t.Errorf("result 1 index = %d, want 1", result1.Index)
+	}
+
+	// second result: failure
+	var result2 ConvertResult
+	if err := json.Unmarshal([]byte(events[2].Data), &result2); err != nil {
+		t.Fatalf("failed to parse result 2: %v", err)
+	}
+	if result2.Success {
+		t.Error("result 2 should be failure")
+	}
+	if result2.Error == "" {
+		t.Error("result 2 should have error message")
+	}
+
+	// done event
+	var doneData map[string]int
+	if err := json.Unmarshal([]byte(events[3].Data), &doneData); err != nil {
+		t.Fatalf("failed to parse done event data: %v", err)
+	}
+	if doneData["completed"] != 1 {
+		t.Errorf("done completed = %d, want 1", doneData["completed"])
+	}
+	if doneData["failed"] != 1 {
+		t.Errorf("done failed = %d, want 1", doneData["failed"])
+	}
+}
+
+func TestHandleConvertOptionsPassthrough(t *testing.T) {
+	var capturedOpts *cli.RunOptions
+	captureFn := func(w io.Writer, opts *cli.RunOptions) error {
+		capturedOpts = opts
+		_, _ = io.WriteString(w, "---\ntitle: Test\n---\n")
+		return nil
+	}
+
+	s := NewServer(captureFn)
+	form := strings.NewReader("urls=https%3A%2F%2Fgithub.com%2Fgolang%2Fgo%2Fissues%2F1&enable_reactions=on&enable_user_links=on")
+	req := httptest.NewRequest(http.MethodPost, "/convert", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	s.mux.ServeHTTP(rec, req)
+
+	if capturedOpts == nil {
+		t.Fatal("convertFunc was not called")
+	}
+	if !capturedOpts.EnableReactions {
+		t.Error("EnableReactions should be true")
+	}
+	if !capturedOpts.EnableUserLinks {
+		t.Error("EnableUserLinks should be true")
+	}
+}
+
+func TestHandleConvertContentType(t *testing.T) {
+	s := NewServer(mockConvertSuccess)
+	form := strings.NewReader("urls=https%3A%2F%2Fgithub.com%2Fgolang%2Fgo%2Fissues%2F1")
+	req := httptest.NewRequest(http.MethodPost, "/convert", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	s.mux.ServeHTTP(rec, req)
+
+	ct := rec.Header().Get("Content-Type")
+	if ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want %q", ct, "text/event-stream")
 	}
 }
