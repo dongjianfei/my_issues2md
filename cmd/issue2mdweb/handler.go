@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -153,9 +154,64 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "表单解析失败", http.StatusBadRequest)
+		return
+	}
+
+	filename := r.FormValue("filename")
+	content := r.FormValue("content")
+
+	if filename == "" || content == "" {
+		http.Error(w, "filename 和 content 不能为空", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	w.Write([]byte(content))
+}
+
+// downloadFile 表示 ZIP 中的单个文件
+type downloadFile struct {
+	Filename string `json:"filename"`
+	Content  string `json:"content"`
 }
 
 func (s *Server) handleDownloadAll(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "表单解析失败", http.StatusBadRequest)
+		return
+	}
+
+	filesJSON := r.FormValue("files")
+	if filesJSON == "" {
+		http.Error(w, "files 不能为空", http.StatusBadRequest)
+		return
+	}
+
+	var files []downloadFile
+	if err := json.Unmarshal([]byte(filesJSON), &files); err != nil {
+		http.Error(w, "files JSON 格式错误", http.StatusBadRequest)
+		return
+	}
+
+	if len(files) == 0 {
+		http.Error(w, "文件列表不能为空", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="issue2md-export.zip"`)
+
+	zipWriter := zip.NewWriter(w)
+	defer zipWriter.Close()
+
+	for _, f := range files {
+		entry, err := zipWriter.Create(f.Filename)
+		if err != nil {
+			return
+		}
+		entry.Write([]byte(f.Content))
+	}
 }

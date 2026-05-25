@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -450,5 +452,153 @@ func TestHandleConvertContentType(t *testing.T) {
 	ct := rec.Header().Get("Content-Type")
 	if ct != "text/event-stream" {
 		t.Errorf("Content-Type = %q, want %q", ct, "text/event-stream")
+	}
+}
+
+func TestHandleDownload(t *testing.T) {
+	tests := []struct {
+		name         string
+		formFilename string
+		formContent  string
+		wantStatus   int
+		wantFilename string
+		wantBody     string
+	}{
+		{
+			name:         "successful download",
+			formFilename: "golang_go_issue_1.md",
+			formContent:  "---\ntitle: Test\n---\n# Content",
+			wantStatus:   http.StatusOK,
+			wantFilename: `attachment; filename="golang_go_issue_1.md"`,
+			wantBody:     "---\ntitle: Test\n---\n# Content",
+		},
+		{
+			name:         "empty filename",
+			formFilename: "",
+			formContent:  "some content",
+			wantStatus:   http.StatusBadRequest,
+		},
+		{
+			name:         "empty content",
+			formFilename: "test.md",
+			formContent:  "",
+			wantStatus:   http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewServer(mockConvertSuccess)
+			form := fmt.Sprintf("filename=%s&content=%s",
+				strings.ReplaceAll(tt.formFilename, " ", "+"),
+				strings.ReplaceAll(strings.ReplaceAll(tt.formContent, "\n", "%0A"), "#", "%23"))
+			req := httptest.NewRequest(http.MethodPost, "/download", strings.NewReader(form))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+
+			s.mux.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("got status %d, want %d", rec.Code, tt.wantStatus)
+			}
+
+			if tt.wantStatus == http.StatusOK {
+				cd := rec.Header().Get("Content-Disposition")
+				if cd != tt.wantFilename {
+					t.Errorf("Content-Disposition = %q, want %q", cd, tt.wantFilename)
+				}
+				if rec.Body.String() != tt.wantBody {
+					t.Errorf("body = %q, want %q", rec.Body.String(), tt.wantBody)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleDownloadAll(t *testing.T) {
+	tests := []struct {
+		name       string
+		filesJSON  string
+		wantStatus int
+		wantFiles  map[string]string
+	}{
+		{
+			name:       "two files",
+			filesJSON:  `[{"filename":"a.md","content":"# A"},{"filename":"b.md","content":"# B"}]`,
+			wantStatus: http.StatusOK,
+			wantFiles:  map[string]string{"a.md": "# A", "b.md": "# B"},
+		},
+		{
+			name:       "empty list",
+			filesJSON:  `[]`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid JSON",
+			filesJSON:  `not-json`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "missing files field",
+			filesJSON:  "",
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewServer(mockConvertSuccess)
+			form := "files=" + strings.ReplaceAll(
+				strings.ReplaceAll(tt.filesJSON, `"`, "%22"),
+				" ", "+")
+			req := httptest.NewRequest(http.MethodPost, "/download-all", strings.NewReader(form))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+
+			s.mux.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("got status %d, want %d.\nBody: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+
+			if tt.wantStatus == http.StatusOK {
+				ct := rec.Header().Get("Content-Type")
+				if ct != "application/zip" {
+					t.Errorf("Content-Type = %q, want application/zip", ct)
+				}
+
+				cd := rec.Header().Get("Content-Disposition")
+				if cd != `attachment; filename="issue2md-export.zip"` {
+					t.Errorf("Content-Disposition = %q", cd)
+				}
+
+				zipReader, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+				if err != nil {
+					t.Fatalf("failed to read zip: %v", err)
+				}
+
+				gotFiles := make(map[string]string)
+				for _, f := range zipReader.File {
+					rc, err := f.Open()
+					if err != nil {
+						t.Fatalf("failed to open zip entry %q: %v", f.Name, err)
+					}
+					content, _ := io.ReadAll(rc)
+					rc.Close()
+					gotFiles[f.Name] = string(content)
+				}
+
+				for wantName, wantContent := range tt.wantFiles {
+					gotContent, ok := gotFiles[wantName]
+					if !ok {
+						t.Errorf("zip missing file %q", wantName)
+						continue
+					}
+					if gotContent != wantContent {
+						t.Errorf("file %q content = %q, want %q", wantName, gotContent, wantContent)
+					}
+				}
+			}
+		})
 	}
 }
