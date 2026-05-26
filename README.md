@@ -1,6 +1,6 @@
 # issue2md
 
-将 GitHub Issue、Pull Request、Discussion 转换为结构化 Markdown 文件的命令行工具。
+将 GitHub Issue、Pull Request、Discussion 转换为结构化 Markdown 文件。提供命令行工具和 Web UI 两种使用方式。
 
 适用于离线阅读、归档保存、知识库构建或二次加工。
 
@@ -19,7 +19,7 @@ git clone https://github.com/dongjianfei/my_issues2md.git
 cd my_issues2md
 make build
 
-# 二进制文件产出在 bin/issue2md
+# 二进制文件产出在 bin/issue2md 和 bin/issue2md-web
 ```
 
 ### 设置 Token
@@ -28,7 +28,7 @@ make build
 export GITHUB_TOKEN=ghp_your_token_here
 ```
 
-### 基本使用
+### CLI 使用
 
 ```bash
 # 输出到终端
@@ -43,6 +43,24 @@ bin/issue2md --enable-reactions https://github.com/owner/repo/pull/123
 # 启用用户链接
 bin/issue2md --enable-user-links https://github.com/owner/repo/discussions/456
 ```
+
+### Web UI 使用
+
+```bash
+# 启动 Web 服务（默认端口 8080）
+GITHUB_TOKEN=$GITHUB_TOKEN bin/issue2md-web
+
+# 自定义端口
+GITHUB_TOKEN=$GITHUB_TOKEN bin/issue2md-web -port 3000
+```
+
+浏览器访问 `http://localhost:8080`，粘贴 GitHub URL（每行一个，最多 20 条），点击"开始转换"即可。
+
+**Web UI 功能：**
+- SSE 流式推送，实时显示每个 URL 的转换进度
+- 批量处理，自动去重，单个失败不影响其他
+- 支持单个 .md 下载和 ZIP 批量打包下载
+- 展开/收起预览转换结果
 
 ### Docker 方式运行
 
@@ -65,13 +83,21 @@ docker run --rm -e GITHUB_TOKEN=$GITHUB_TOKEN issue2md https://github.com/golang
 .
 ├── cmd/
 │   ├── issue2md/          # CLI 入口
-│   └── issue2mdweb/       # Web 服务入口（待实现）
+│   └── issue2mdweb/       # Web UI 批量转换服务
+│       ├── main.go        # flag 解析(-port)、启动 HTTP 服务
+│       ├── server.go      # Server struct、convertFunc DI、路由注册
+│       ├── handler.go     # HTTP handlers + URL 辅助函数 + SSE helpers
+│       ├── handler_test.go# 21 个表格驱动 httptest 测试
+│       └── templates/
+│           └── index.html # 单页模板（表单 + CSS + JS）
 ├── internal/
 │   ├── parser/            # URL 解析，识别内容类型
 │   ├── github/            # GitHub API 交互层（REST + GraphQL）
 │   ├── converter/         # 数据 → Markdown 转换
 │   └── cli/               # 参数解析 + 主流程编排
-├── specs/                 # 功能规格文档
+├── docs/superpowers/
+│   ├── specs/             # 设计规格书
+│   └── plans/             # 实现计划
 ├── Dockerfile             # 多阶段生产级容器构建
 ├── Makefile               # 构建、测试、lint、Docker 一站式命令
 └── constitution.md        # 项目开发宪法（核心原则）
@@ -84,18 +110,27 @@ docker run --rm -e GITHUB_TOKEN=$GITHUB_TOKEN issue2md https://github.com/golang
 │  CLI/main   │────▶│  parser  │────▶│    github    │────▶│ converter │──▶ Markdown
 │  (入口)     │     │(URL解析) │     │(API获取数据) │     │(格式转换) │
 └─────────────┘     └──────────┘     └──────────────┘     └───────────┘
+       ▲
+       │ convertFunc DI
+┌──────┴──────┐
+│ Web Server  │──▶ SSE 流式推送 ──▶ 浏览器
+│ (薄适配层)  │
+└─────────────┘
 ```
 
 - **parser**: 解析 GitHub URL，提取 owner/repo/number/type
 - **github**: Issue/PR 走 REST API（go-github），Discussion 走 GraphQL（githubv4）
 - **converter**: 将结构化数据渲染为带 YAML frontmatter 的 GFM Markdown
+- **Web Server**: `cli.Run` 的 HTTP 包装，通过 `convertFunc` 依赖注入，不重复业务逻辑
 
 ## 开发指南
 
 ### 常用命令
 
 ```bash
-make build            # 编译所有二进制
+make build            # 编译 CLI + Web 二进制
+make build-cli        # 仅编译 CLI
+make build-web        # 仅编译 Web 服务
 make test             # 运行单元测试
 make test-integration # 运行集成测试（需要 GITHUB_TOKEN）
 make lint             # 静态分析（golangci-lint 或 go vet）
@@ -142,9 +177,9 @@ Arguments:
 ## 已知限制
 
 - Discussion 每条评论的回复最多获取 100 条（超出时 stderr 输出警告）
-- Web 服务（`cmd/issue2mdweb`）尚未实现
 - 不支持 GitHub Enterprise（仅支持 github.com）
 - PR 输出不含代码 diff 和 commit 历史
+- Web UI 不支持私有仓库的 per-request Token 注入（使用服务端环境变量中的 Token）
 
 ## 依赖
 
