@@ -5,12 +5,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/dongjianfei/issue2md/internal/cli"
 	"github.com/dongjianfei/issue2md/internal/parser"
 )
+
+const maxRequestBody = 10 << 20 // 10MB
 
 const maxURLs = 20
 
@@ -64,8 +68,22 @@ func generateFilename(rawURL string) string {
 	return fmt.Sprintf("%s_%s_%s_%d.md", parsed.Owner, parsed.Repo, typeStr, parsed.Number)
 }
 
+// sanitizeFilename 过滤文件名中的路径遍历和危险字符
+func sanitizeFilename(name string) string {
+	name = filepath.Base(name)
+	name = strings.ReplaceAll(name, `"`, "")
+	name = strings.ReplaceAll(name, `\`, "")
+	if name == "" || name == "." {
+		return "output.md"
+	}
+	return name
+}
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	s.templates.ExecuteTemplate(w, "index.html", nil)
+	if err := s.templates.ExecuteTemplate(w, "index.html", nil); err != nil {
+		log.Printf("template render error: %v", err)
+		http.Error(w, "template render error", http.StatusInternalServerError)
+	}
 }
 
 // ConvertResult 表示单个 URL 的转换结果
@@ -81,7 +99,11 @@ type ConvertResult struct {
 
 // writeSSE 写入一个 SSE 事件
 func writeSSE(w http.ResponseWriter, event string, data interface{}) {
-	jsonData, _ := json.Marshal(data)
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("SSE marshal error: %v", err)
+		return
+	}
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData)
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
@@ -89,6 +111,7 @@ func writeSSE(w http.ResponseWriter, event string, data interface{}) {
 }
 
 func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	if err := r.ParseForm(); err != nil {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -136,6 +159,7 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := s.convert(&buf, opts); err != nil {
+			log.Printf("convert error for %s: %v", u, err)
 			result.Success = false
 			result.Error = err.Error()
 			result.Filename = generateFilename(u)
@@ -154,22 +178,25 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "表单解析失败", http.StatusBadRequest)
 		return
 	}
 
-	filename := r.FormValue("filename")
+	filename := sanitizeFilename(r.FormValue("filename"))
 	content := r.FormValue("content")
 
-	if filename == "" || content == "" {
+	if content == "" {
 		http.Error(w, "filename 和 content 不能为空", http.StatusBadRequest)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-	w.Write([]byte(content))
+	if _, err := w.Write([]byte(content)); err != nil {
+		log.Printf("write download error: %v", err)
+	}
 }
 
 // downloadFile 表示 ZIP 中的单个文件
@@ -179,6 +206,7 @@ type downloadFile struct {
 }
 
 func (s *Server) handleDownloadAll(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "表单解析失败", http.StatusBadRequest)
 		return
@@ -208,10 +236,15 @@ func (s *Server) handleDownloadAll(w http.ResponseWriter, r *http.Request) {
 	defer zipWriter.Close()
 
 	for _, f := range files {
-		entry, err := zipWriter.Create(f.Filename)
+		safeName := sanitizeFilename(f.Filename)
+		entry, err := zipWriter.Create(safeName)
 		if err != nil {
+			log.Printf("zip create error: %v", err)
 			return
 		}
-		entry.Write([]byte(f.Content))
+		if _, err := entry.Write([]byte(f.Content)); err != nil {
+			log.Printf("zip write error: %v", err)
+			return
+		}
 	}
 }

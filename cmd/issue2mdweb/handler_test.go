@@ -320,6 +320,20 @@ func TestHandleConvert(t *testing.T) {
 			wantEvents: []string{"start", "result", "done"},
 			wantStatus: http.StatusOK,
 		},
+		{
+			name:       "exceeds 20 URL limit",
+			convertFn:  mockConvertSuccess,
+			formURLs:   generateNURLs(21),
+			wantEvents: []string{"error"},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "whitespace only URLs",
+			convertFn:  mockConvertSuccess,
+			formURLs:   "  \n\n  ",
+			wantEvents: []string{"error"},
+			wantStatus: http.StatusOK,
+		},
 	}
 
 	for _, tt := range tests {
@@ -473,10 +487,12 @@ func TestHandleDownload(t *testing.T) {
 			wantBody:     "---\ntitle: Test\n---\n# Content",
 		},
 		{
-			name:         "empty filename",
+			name:         "empty filename falls back to output.md",
 			formFilename: "",
 			formContent:  "some content",
-			wantStatus:   http.StatusBadRequest,
+			wantStatus:   http.StatusOK,
+			wantFilename: `attachment; filename="output.md"`,
+			wantBody:     "some content",
 		},
 		{
 			name:         "empty content",
